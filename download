@@ -1,0 +1,121 @@
+import fs from "fs";
+import path from "path";
+import XLSX from "xlsx";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const DATA_DIR = path.join(__dirname, "..", "..", "data");
+
+// Le fichier source peut être clients.xlsx OU clients.csv (le premier trouvé est utilisé).
+// Cela permet de remplacer les données par un simple export Excel ou CSV de son système,
+// sans aucune connexion base de données.
+const CANDIDATE_FILES = ["clients.xlsx", "clients.xls", "clients.csv"];
+
+function resolveClientsFile() {
+  for (const name of CANDIDATE_FILES) {
+    const p = path.join(DATA_DIR, name);
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(
+    `Aucun fichier clients trouvé dans ${DATA_DIR} (attendu : ${CANDIDATE_FILES.join(", ")})`
+  );
+}
+
+// Normalise les noms de colonnes attendus (insensible à la casse / espaces / accents basiques)
+const COLUMN_ALIASES = {
+  id: "ID",
+  accountmanager: "AccountManager",
+  "account manager": "AccountManager",
+  type: "Type",
+  name: "Name",
+  nom: "Name",
+  accountid: "AccountID",
+  "account id": "AccountID",
+  address: "Address",
+  adresse: "Address",
+  departement: "Departement",
+  "département": "Departement",
+  postalcode: "PostalCode",
+  "postal code": "PostalCode",
+  "code postal": "PostalCode",
+  city: "City",
+  ville: "City",
+  country: "Country",
+  pays: "Country",
+  locationsshipping: "LocationsShipping",
+  "locations shipping": "LocationsShipping",
+  latitude: "Latitude",
+  lat: "Latitude",
+  longitude: "Longitude",
+  lon: "Longitude",
+  lng: "Longitude",
+};
+
+function normalizeKey(key) {
+  const k = String(key).trim().toLowerCase();
+  return COLUMN_ALIASES[k] || key;
+}
+
+function normalizeRow(rawRow) {
+  const row = {};
+  for (const [k, v] of Object.entries(rawRow)) {
+    row[normalizeKey(k)] = v;
+  }
+  return {
+    id: row.ID ?? row.id,
+    accountManager: (row.AccountManager ?? "").toString().trim(),
+    type: (row.Type ?? "").toString().trim(),
+    name: (row.Name ?? "").toString().trim(),
+    accountId: (row.AccountID ?? "").toString().trim(),
+    address: (row.Address ?? "").toString().trim(),
+    departement: (row.Departement ?? "").toString().trim(),
+    postalCode: (row.PostalCode ?? "").toString().trim(),
+    city: (row.City ?? "").toString().trim(),
+    country: (row.Country ?? "").toString().trim(),
+    locationsShipping: (row.LocationsShipping ?? "").toString().trim(),
+    latitude: row.Latitude !== undefined && row.Latitude !== "" ? Number(row.Latitude) : null,
+    longitude: row.Longitude !== undefined && row.Longitude !== "" ? Number(row.Longitude) : null,
+  };
+}
+
+let cache = null;
+let cacheMtime = null;
+
+/**
+ * Charge (et met en cache) la liste des clients depuis le fichier Excel/CSV.
+ * Le cache est invalidé automatiquement si le fichier source est modifié sur disque,
+ * ce qui permet de remplacer clients.xlsx/csv sans redémarrer le serveur.
+ */
+export function loadClients() {
+  const file = resolveClientsFile();
+  const mtime = fs.statSync(file).mtimeMs;
+
+  if (cache && cacheMtime === mtime) {
+    return cache;
+  }
+
+  const workbook = XLSX.readFile(file, { raw: false });
+  const firstSheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[firstSheetName];
+  const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+  const clients = rawRows
+    .map(normalizeRow)
+    .filter((c) => c.name); // ignore les lignes vides
+
+  cache = clients;
+  cacheMtime = mtime;
+  return clients;
+}
+
+/** Clients avec coordonnées valides (utilisés pour la Carte Monde) */
+export function loadGeolocatedClients() {
+  return loadClients().filter(
+    (c) => Number.isFinite(c.latitude) && Number.isFinite(c.longitude)
+  );
+}
+
+export function clearClientsCache() {
+  cache = null;
+  cacheMtime = null;
+}

@@ -1,0 +1,30 @@
+import express from "express";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+import clientsRouter from "./routes/clients.js";
+import commerciauxRouter from "./routes/commerciaux.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = path.join(__dirname, "..", "data");
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+
+app.use(cors());
+app.use(express.json());
+
+app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+
+// Référentiel géographique des départements (fichier statique, pas de base de données)
+app.get("/api/departements-geojson", (req, res) => {
+  res.sendFile(path.join(DATA_DIR, "departements-france.geojson"));
+});
+
+app.use("/api/clients", clientsRouter);
+app.use("/api/commerciaux", commerciauxRouter);
+
+app.listen(PORT, () => {
+  console.log(`API Ventes & Marketing démarrée sur http://localhost:${PORT}`);
+  console.log(`Données lues depuis : ${DATA_DIR}`);
+});

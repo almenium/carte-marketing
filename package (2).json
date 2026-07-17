@@ -1,0 +1,140 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = path.join(__dirname, "..", "..", "data");
+const STORE_FILE = path.join(DATA_DIR, "commerciaux.json");
+
+const NAME_REGEX = /^[\p{L}0-9 '.-]{1,100}$/u;
+
+function readStore() {
+  if (!fs.existsSync(STORE_FILE)) {
+    return { commerciaux: [] };
+  }
+  const raw = fs.readFileSync(STORE_FILE, "utf-8");
+  return JSON.parse(raw || '{"commerciaux":[]}');
+}
+
+function writeStore(store) {
+  // Écriture atomique simple (fichier temporaire puis renommage) pour éviter un fichier
+  // corrompu en cas d'écriture concurrente.
+  const tmpFile = `${STORE_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(store, null, 2), "utf-8");
+  fs.renameSync(tmpFile, STORE_FILE);
+}
+
+export function listCommerciaux() {
+  return readStore().commerciaux;
+}
+
+export function findCommercial(nom) {
+  return readStore().commerciaux.find(
+    (c) => c.nom.trim().toLowerCase() === nom.trim().toLowerCase()
+  );
+}
+
+export function validateNom(nom) {
+  if (!nom || !nom.trim()) return "Le nom ne peut pas être vide.";
+  if (!NAME_REGEX.test(nom.trim())) {
+    return "Le nom ne peut contenir que des lettres, chiffres, espaces, apostrophes, points ou tirets (100 caractères max).";
+  }
+  return null;
+}
+
+export function validateCouleur(couleur) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(couleur || "")) {
+    return "La couleur doit être un code hexadécimal valide (ex: #3498db).";
+  }
+  return null;
+}
+
+/**
+ * Crée ou modifie un commercial.
+ * - Si `ancienNom` est fourni et différent de `nom`, il s'agit d'un renommage.
+ * - Les zones (principale/secondaire) sont des listes de codes département.
+ */
+export function saveCommercial({ nom, ancienNom, couleur, zonePrincipale = [], zoneSecondaire = [] }) {
+  const errNom = validateNom(nom);
+  if (errNom) throw new Error(errNom);
+  const errCouleur = validateCouleur(couleur);
+  if (errCouleur) throw new Error(errCouleur);
+
+  const store = readStore();
+  const nomNormalise = nom.trim();
+  const cibleAncienNom = (ancienNom || nomNormalise).trim().toLowerCase();
+
+  const existantMemeNom = store.commerciaux.find(
+    (c) => c.nom.trim().toLowerCase() === nomNormalise.toLowerCase()
+  );
+  const estRenommage = ancienNom && ancienNom.trim().toLowerCase() !== nomNormalise.toLowerCase();
+
+  if (estRenommage && existantMemeNom) {
+    throw new Error(`Un commercial nommé "${nomNormalise}" existe déjà.`);
+  }
+
+  const index = store.commerciaux.findIndex(
+    (c) => c.nom.trim().toLowerCase() === cibleAncienNom
+  );
+
+  const record = {
+    nom: nomNormalise,
+    couleur,
+    zonePrincipale: [...new Set(zonePrincipale)],
+    zoneSecondaire: [...new Set(zoneSecondaire)],
+  };
+
+  if (index === -1) {
+    if (existantMemeNom) {
+      throw new Error(`Un commercial nommé "${nomNormalise}" existe déjà.`);
+    }
+    store.commerciaux.push(record);
+  } else {
+    store.commerciaux[index] = record;
+  }
+
+  // Un même département ne peut avoir qu'un seul responsable "principal" à la fois :
+  // on le retire de la zone principale des autres commerciaux.
+  for (const c of store.commerciaux) {
+    if (c.nom === record.nom) continue;
+    c.zonePrincipale = c.zonePrincipale.filter((d) => !record.zonePrincipale.includes(d));
+  }
+
+  writeStore(store);
+  return record;
+}
+
+export function deleteCommercial(nom) {
+  const store = readStore();
+  const before = store.commerciaux.length;
+  store.commerciaux = store.commerciaux.filter(
+    (c) => c.nom.trim().toLowerCase() !== nom.trim().toLowerCase()
+  );
+  if (store.commerciaux.length === before) {
+    throw new Error(`Commercial "${nom}" introuvable.`);
+  }
+  writeStore(store);
+}
+
+/** dept_code -> { commercial, couleur } (zone principale uniquement) */
+export function getDepartementsCommercialPrincipal() {
+  const map = {};
+  for (const c of listCommerciaux()) {
+    for (const dept of c.zonePrincipale) {
+      map[dept] = { commercial: c.nom, couleur: c.couleur };
+    }
+  }
+  return map;
+}
+
+/** dept_code -> [commercial, ...] (zone secondaire) */
+export function getDepartementsCommerciauxSecondaires() {
+  const map = {};
+  for (const c of listCommerciaux()) {
+    for (const dept of c.zoneSecondaire) {
+      if (!map[dept]) map[dept] = [];
+      map[dept].push(c.nom);
+    }
+  }
+  return map;
+}
